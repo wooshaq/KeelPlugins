@@ -240,7 +240,6 @@ namespace BetterSceneLoader
             loadbutton.onClick.AddListener(() =>
             {
                 confirmpanel.gameObject.SetActive(false);
-                optionspanel.gameObject.SetActive(false);
                 OnLoadButtonClick?.Invoke(currentPath);
                 if(BetterSceneLoader.AutoClose.Value)
                     HideWindow();
