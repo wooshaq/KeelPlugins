@@ -7,7 +7,7 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <OutputPath>$(SolutionDir)bin\$(Configuration)</OutputPath>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Company>https://github.com/IllusionMods/KeelPlugins</Company>
+    <Company>https://gitgoon.dev/IllusionMods/KeelPlugins</Company>
     <Copyright>GPL-3.0 license, 2019</Copyright>
     <LangVersion>preview</LangVersion>
     <Deterministic>true</Deterministic>
