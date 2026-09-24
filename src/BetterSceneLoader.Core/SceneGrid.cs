@@ -31,6 +31,16 @@ namespace BetterSceneLoader
             toolbarToggle.Toggled.OnNext(false);
         }
 
+        private bool pendingOpen;
+
+        public override void OpenWindow()
+        {
+            if(toolbarToggle != null)
+                toolbarToggle.Toggled.OnNext(true); // keeps the toolbar button state in sync
+            else
+                pendingOpen = true; // toolbar button not created yet (Studio startup)
+        }
+
         public override void CreateUI(string name, int sortingOrder, string titleText)
         {
             base.CreateUI(name, sortingOrder, titleText);
@@ -43,6 +53,15 @@ namespace BetterSceneLoader
             yield return null;
             toolbarToggle = new SimpleToolbarToggle(BetterSceneLoader.PluginName, null, GetTex, false, BetterSceneLoader.plugin, ShowWindow);
             ToolbarManager.AddLeftToolbarControl(toolbarToggle);
+
+            if(pendingOpen || BetterSceneLoader.OpenOnStudioStart.Value)
+            {
+                pendingOpen = false;
+                // wait until Studio finished building its UI
+                yield return null;
+                yield return null;
+                OpenWindow();
+            }
             Texture2D GetTex() => PngAssist.ChangeTextureFromByte(Resource.GetResourceAsBytes(typeof(ImageGrid).Assembly, "Resources.pluginicon"));
         }
     }

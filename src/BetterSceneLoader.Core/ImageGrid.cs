@@ -22,11 +22,10 @@ namespace BetterSceneLoader
         private readonly float marginSize = 5f;
         private readonly float headerSize = 20f;
         private readonly float UIScale = 1.0f;
-        private readonly float scrollOffsetX = -15f;
         private readonly float dropdownWidth = 250f;
 
         private readonly Color dragColor = new Color(0.4f, 0.4f, 0.4f, 1f);
-        private readonly Color backgroundColor = new Color(1f, 1f, 1f, 1f);
+        private readonly Color backgroundColor = new Color(0.13f, 0.13f, 0.13f, 1f);
         private readonly Color outlineColor = new Color(0f, 0f, 0f, 1f);
 
         private Canvas UISystem;
@@ -41,9 +40,22 @@ namespace BetterSceneLoader
         private Image infopanel;
         private Text infotext;
         private Dropdown sorting;
+        private FolderTreeView folderTree;
 
         private readonly Dictionary<string, CategoryData> sceneCache = new Dictionary<string, CategoryData>();
         private Button currentButton;
+        private Button hoveredButton;
+
+        public bool IsVisible => UISystem != null && UISystem.gameObject.activeSelf;
+
+        /// <summary>Frame in which Esc was consumed by this window (it may already be closed when Studio checks Esc).</summary>
+        public int EscConsumedFrame { get; private set; } = -1;
+
+        private class UpdateRelay : MonoBehaviour
+        {
+            public Action OnUpdate;
+            private void Update() => OnUpdate?.Invoke();
+        }
         private readonly string defaultPath;
         private string currentPath;
         private string currentCategoryFolder;
@@ -81,6 +93,11 @@ namespace BetterSceneLoader
             ShowWindow(false);
         }
 
+        public virtual void OpenWindow()
+        {
+            ShowWindow(true);
+        }
+
         public void UpdateWindow()
         {
             foreach(var scene in sceneCache.Values)
@@ -98,6 +115,17 @@ namespace BetterSceneLoader
                 imagelist.scrollSensitivity = Mathf.Lerp(30f, 300f, BetterSceneLoader.ScrollSensitivity.Value / 10f);
             }
 
+            if(imagelist != null)
+            {
+                var showTree = BetterSceneLoader.ShowFolderTree.Value;
+                var treeWidth = BetterSceneLoader.FolderTreeWidth.Value;
+                folderTree?.SetVisible(showTree);
+                if(showTree && folderTree != null)
+                    folderTree.RectTransform.SetRect(0f, 0f, 0f, 1f, marginSize, marginSize, marginSize + treeWidth, -headerSize - marginSize / 2f);
+                var listLeft = showTree ? marginSize * 2f + treeWidth : marginSize;
+                imagelist.transform.SetRect(0f, 0f, 1f, 1f, listLeft, marginSize, -marginSize, -headerSize - marginSize / 2f);
+            }
+
             if(mainPanel)
             {
                 mainPanel.transform.SetRect(BetterSceneLoader.AnchorLeft.Value, BetterSceneLoader.AnchorBottom.Value,
@@ -112,6 +140,7 @@ namespace BetterSceneLoader
             UISystem = UIUtility.CreateNewUISystem(name);
             UISystem.GetComponent<CanvasScaler>().referenceResolution = new Vector2(1920f / UIScale, 1080f / UIScale);
             UISystem.sortingOrder = sortingOrder;
+            UISystem.gameObject.AddComponent<UpdateRelay>().OnUpdate = OnUpdate;
             ShowWindow(false);
 
             mainPanel = UIUtility.CreatePanel("Panel", UISystem.transform);
@@ -153,6 +182,7 @@ namespace BetterSceneLoader
                 imagelist.content.GetComponentInChildren<Image>().gameObject.SetActive(false);
                 imagelist.content.anchoredPosition = new Vector2(0f, 0f);
                 PopulateGrid();
+                folderTree?.SetSelected(currentCategoryFolder);
             });
             DropdownAutoScroll.Setup(category);
             DropdownFilter.AddFilterUI(category, "BetterSceneLoaderDropdown");
@@ -176,18 +206,7 @@ namespace BetterSceneLoader
 
             var save = UIUtility.CreateButton("SaveButton", drag.transform, "Save");
             save.transform.SetRect(0f, 0f, 0f, 1f, curPos, 0f, curPos+=80f);
-            save.onClick.AddListener(() =>
-            {
-                OnSaveButtonClick?.Invoke();
-                if(currentCategoryFolder == defaultPath)
-                {
-                    var dir = new DirectoryInfo(defaultPath);
-                    var fileInfo = dir.GetFiles().OrderByDescending(f => f.LastWriteTime).First();
-                    var gridContainer = imagelist.content.GetComponentInChildren<Image>();
-                    var button = CreateSceneButton(gridContainer.transform, PngAssist.LoadTexture(fileInfo.FullName), fileInfo);
-                    button.transform.SetAsFirstSibling();
-                }
-            });
+            save.onClick.AddListener(OnSave);
 
             var folder = UIUtility.CreateButton("FolderButton", drag.transform, "Folder");
             folder.transform.SetRect(0f, 0f, 0f, 1f, curPos, 0f, curPos+=80f);
@@ -210,11 +229,15 @@ namespace BetterSceneLoader
             imagelist = UIUtility.CreateScrollView("Imagelist", mainPanel.transform);
             imagelist.transform.SetRect(0f, 0f, 1f, 1f, marginSize, marginSize, -marginSize, -headerSize - marginSize / 2f);
             imagelist.gameObject.AddComponent<Mask>();
+            imagelist.GetComponent<Image>().color = FolderTreeView.PanelColor;
             imagelist.content.gameObject.AddComponent<VerticalLayoutGroup>();
             imagelist.content.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
-            imagelist.verticalScrollbar.GetComponent<RectTransform>().offsetMin = new Vector2(scrollOffsetX, 0f);
-            imagelist.viewport.offsetMax = new Vector2(scrollOffsetX, 0f);
+            ScrollbarStyle.Apply(imagelist, marginSize);
             imagelist.movementType = ScrollRect.MovementType.Clamped;
+
+            folderTree = new FolderTreeView(GetRoots, SelectFolder);
+            folderTree.CreateUI(mainPanel.transform);
+            ScrollbarStyle.CopyLook(imagelist.verticalScrollbar, folderTree.Scroll.verticalScrollbar);
 
             optionspanel = UIUtility.CreatePanel("ButtonPanel", imagelist.transform);
             optionspanel.gameObject.SetActive(false);
@@ -226,9 +249,8 @@ namespace BetterSceneLoader
             yesbutton.transform.SetRect(0f, 0f, 0.5f, 1f);
             yesbutton.onClick.AddListener(() =>
             {
-                RecycleBinUtil.MoveToRecycleBin(currentPath);
                 confirmpanel.gameObject.SetActive(false);
-                currentButton.gameObject.SetActive(false);
+                DeleteCurrent();
             });
 
             nobutton = UIUtility.CreateButton("NoButton", confirmpanel.transform, "N");
@@ -237,13 +259,7 @@ namespace BetterSceneLoader
 
             var loadbutton = UIUtility.CreateButton("LoadButton", optionspanel.transform, "Load");
             loadbutton.transform.SetRect(0f, 0f, 0.3f, 1f);
-            loadbutton.onClick.AddListener(() =>
-            {
-                confirmpanel.gameObject.SetActive(false);
-                OnLoadButtonClick?.Invoke(currentPath);
-                if(BetterSceneLoader.AutoClose.Value)
-                    HideWindow();
-            });
+            loadbutton.onClick.AddListener(LoadCurrent);
 
             var importbutton = UIUtility.CreateButton("ImportButton", optionspanel.transform, "Import");
             importbutton.transform.SetRect(0.35f, 0f, 0.65f, 1f);
@@ -256,16 +272,7 @@ namespace BetterSceneLoader
 
             var deletebutton = UIUtility.CreateButton("DeleteButton", optionspanel.transform, "Delete");
             deletebutton.transform.SetRect(0.7f, 0f, 1f, 1f);
-            deletebutton.onClick.AddListener(() =>
-            {
-                if(BetterSceneLoader.ConfirmDelete.Value)
-                    confirmpanel.gameObject.SetActive(true);
-                else
-                {
-                    RecycleBinUtil.MoveToRecycleBin(currentPath);
-                    currentButton.gameObject.SetActive(false);
-                }
-            });
+            deletebutton.onClick.AddListener(RequestDelete);
 
             infopanel = UIUtility.CreatePanel("InfoPanel", imagelist.transform);
             infopanel.gameObject.SetActive(false);
@@ -279,20 +286,216 @@ namespace BetterSceneLoader
             PopulateGrid();
         }
 
+        private void LoadCurrent()
+        {
+            if(string.IsNullOrEmpty(currentPath))
+                return;
+
+            confirmpanel.gameObject.SetActive(false);
+            OnLoadButtonClick?.Invoke(currentPath);
+            if(BetterSceneLoader.AutoClose.Value)
+                HideWindow();
+        }
+
+        private void RequestDelete()
+        {
+            if(currentButton == null || string.IsNullOrEmpty(currentPath))
+                return;
+
+            if(BetterSceneLoader.ConfirmDelete.Value)
+                confirmpanel.gameObject.SetActive(true);
+            else
+                DeleteCurrent();
+        }
+
+        private void DeleteCurrent()
+        {
+            if(currentButton == null || string.IsNullOrEmpty(currentPath))
+                return;
+
+            RecycleBinUtil.MoveToRecycleBin(currentPath);
+            currentButton.gameObject.SetActive(false);
+            if(hoveredButton == currentButton)
+                hoveredButton = null;
+        }
+
+        private void OnUpdate()
+        {
+            // keyboard answer for the Y/N confirm panel: Del/Enter/Y = yes, N/Esc = no
+            if(Input.GetKeyDown(KeyCode.Escape))
+                EscConsumedFrame = Time.frameCount;
+
+            if(confirmpanel != null && confirmpanel.gameObject.activeInHierarchy && !IsTypingInInputField())
+            {
+                if(Input.GetKeyDown(KeyCode.Delete) || Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter) || Input.GetKeyDown(KeyCode.Y))
+                {
+                    confirmpanel.gameObject.SetActive(false);
+                    DeleteCurrent();
+                    return;
+                }
+                if(Input.GetKeyDown(KeyCode.N) || Input.GetKeyDown(KeyCode.Escape))
+                {
+                    confirmpanel.gameObject.SetActive(false);
+                    return;
+                }
+            }
+
+            // Esc closes the window (Studio's exit dialog is blocked by a hook while we're open)
+            if(Input.GetKeyDown(KeyCode.Escape) && !IsTypingInInputField())
+            {
+                HideWindow();
+                return;
+            }
+
+            if(!BetterSceneLoader.DeleteKey.Value || hoveredButton == null || !hoveredButton.gameObject.activeInHierarchy)
+                return;
+            if(!Input.GetKeyDown(KeyCode.Delete) || IsTypingInInputField())
+                return;
+
+            currentButton = hoveredButton;
+            RequestDelete();
+        }
+
+        private static bool IsTypingInInputField()
+        {
+            var selected = UnityEngine.EventSystems.EventSystem.current?.currentSelectedGameObject;
+            if(selected == null)
+                return false;
+            var field = selected.GetComponent<InputField>();
+            return field != null && field.isFocused;
+        }
+
+        private List<SceneRoot> GetRoots()
+        {
+            return SceneRoots.Get(defaultPath, BetterSceneLoader.ExtraSceneFolders.Value);
+        }
+
         private List<Dropdown.OptionData> GetCategories()
         {
-            if(!File.Exists(defaultPath))
+            if(!Directory.Exists(defaultPath))
                 Directory.CreateDirectory(defaultPath);
 
-            var folders = Directory.GetDirectories(defaultPath, "*", SearchOption.AllDirectories).OrderBy(x => x).ToList();
-            folders.Insert(0, defaultPath);
-            
-            return folders.Select(x =>
+            CategoryFolders.Clear();
+            var result = new List<Dropdown.OptionData>();
+
+            foreach(var root in GetRoots())
             {
-                var catname = x == defaultPath ? "/" : x.Remove(0, defaultPath.Length+1).Replace("\\", "/");
-                CategoryFolders[catname] = x;
-                return new Dropdown.OptionData(catname);
-            }).ToList();
+                List<string> folders;
+                try
+                {
+                    folders = Directory.GetDirectories(root.Path, "*", SearchOption.AllDirectories).OrderBy(x => x).ToList();
+                }
+                catch(Exception ex)
+                {
+                    Log.Warning($"Failed to read scene folder \"{root.Path}\": {ex.Message}");
+                    folders = new List<string>();
+                }
+                folders.Insert(0, root.Path);
+
+                var prefix = root.IsDefault ? "" : $"[{root.Label}]";
+                foreach(var x in folders)
+                {
+                    string catname;
+                    if(x == root.Path)
+                        catname = root.IsDefault ? "/" : prefix;
+                    else
+                        catname = (root.IsDefault ? "" : prefix + "/") + x.Remove(0, root.Path.Length + 1).Replace("\\", "/");
+
+                    CategoryFolders[catname] = x;
+                    result.Add(new Dropdown.OptionData(catname));
+                }
+            }
+
+            return result;
+        }
+
+        private void OnSave()
+        {
+            // Studio always saves into UserData/Studio/scene, remember what was there before
+            HashSet<string> before;
+            try
+            {
+                before = new HashSet<string>(Directory.GetFiles(defaultPath, "*.png"), StringComparer.OrdinalIgnoreCase);
+            }
+            catch(Exception)
+            {
+                before = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            OnSaveButtonClick?.Invoke();
+
+            FileInfo fileInfo;
+            try
+            {
+                fileInfo = new DirectoryInfo(defaultPath).GetFiles("*.png")
+                                                         .Where(f => !before.Contains(f.FullName))
+                                                         .OrderByDescending(f => f.LastWriteTime)
+                                                         .FirstOrDefault();
+            }
+            catch(Exception ex)
+            {
+                Log.Warning($"Could not find saved scene: {ex.Message}");
+                return;
+            }
+
+            if(fileInfo == null)
+                return;
+
+            var target = currentCategoryFolder;
+            if(!string.Equals(target, defaultPath, StringComparison.OrdinalIgnoreCase))
+            {
+                if(!BetterSceneLoader.SaveToCurrentFolder.Value)
+                    return;
+
+                try
+                {
+                    var destination = Path.Combine(target, fileInfo.Name);
+                    File.Move(fileInfo.FullName, destination);
+                    fileInfo = new FileInfo(destination);
+                    Log.Info($"Scene saved to {destination}");
+                }
+                catch(Exception ex)
+                {
+                    Log.Message($"Could not move saved scene to \"{target}\", it stays in the default folder: {ex.Message}");
+                    return;
+                }
+            }
+
+            var gridContainer = imagelist.content.GetComponentInChildren<Image>();
+            if(gridContainer == null)
+                return;
+            var button = CreateSceneButton(gridContainer.transform, PngAssist.LoadTexture(fileInfo.FullName), fileInfo);
+            button.transform.SetAsFirstSibling();
+        }
+
+        /// <summary>Rescan all scene folders (used when the folder settings change).</summary>
+        public void RefreshFolders()
+        {
+            if(category == null || imagelist == null)
+                return;
+            ReloadImages();
+        }
+
+        private void SelectFolder(string path)
+        {
+            if(string.Equals(path, currentCategoryFolder, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            var index = FirstIndexMatch(category.options, x =>
+                CategoryFolders.TryGetValue(x.text, out var folder) && string.Equals(folder, path, StringComparison.OrdinalIgnoreCase));
+
+            if(index == -1)
+            {
+                // folder created after the last refresh
+                ReloadImages();
+                index = FirstIndexMatch(category.options, x =>
+                    CategoryFolders.TryGetValue(x.text, out var folder) && string.Equals(folder, path, StringComparison.OrdinalIgnoreCase));
+                if(index == -1)
+                    return;
+            }
+
+            category.value = index; // fires onValueChanged which switches the grid
+            category.RefreshShownValue();
         }
 
         private void ReloadImages()
@@ -304,20 +507,30 @@ namespace BetterSceneLoader
             confirmpanel.gameObject.SetActive(false);
             infopanel.gameObject.SetActive(false);
 
-            var newCats = GetCategories();
+            folderTree?.Rebuild();
+
             var oldIndex = category.value;
-            var newIndex = FirstIndexMatch(newCats, x => x.text == category.options[oldIndex].text);
+            var oldText = oldIndex >= 0 && oldIndex < category.options.Count ? category.options[oldIndex].text : null;
+            var newCats = GetCategories();
+            var newIndex = FirstIndexMatch(newCats, x => x.text == oldText);
+            if(newIndex == -1)
+                newIndex = 0;
             category.options = newCats;
-            if(oldIndex != newIndex || newIndex == -1)
+            if(oldIndex != newIndex)
             {
-                category.value = newIndex == -1 ? 0 : newIndex;
+                category.value = newIndex; // fires onValueChanged
                 category.RefreshShownValue();
             }
             else
             {
-                GameObject.Destroy(imagelist.content.GetComponentInChildren<Image>().gameObject);
+                var container = imagelist.content.GetComponentInChildren<Image>();
+                if(container != null)
+                    GameObject.Destroy(container.gameObject);
                 imagelist.content.anchoredPosition = new Vector2(0f, 0f);
+                currentCategoryFolder = CategoryFolders[newCats[newIndex].text];
+                category.RefreshShownValue();
                 PopulateGrid(true);
+                folderTree?.SetSelected(currentCategoryFolder);
             }
         }
 
@@ -359,6 +572,7 @@ namespace BetterSceneLoader
 
                 var container = UIUtility.CreatePanel("GridContainer", imagelist.content.transform);
                 container.transform.SetRect(0f, 0f, 1f, 1f);
+                container.color = new Color(0f, 0f, 0f, 0f);
                 container.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
                 var gridlayout = container.gameObject.AddComponent<AutoGridLayout>();
@@ -408,8 +622,26 @@ namespace BetterSceneLoader
         private Button CreateSceneButton(Transform parent, Texture2D texture, FileInfo fileInfo)
         {
             var button = UIUtility.CreateButton("ImageButton", parent, "");
+            button.OnPointerExitAsObservable().Subscribe(e =>
+            {
+                if(hoveredButton == button)
+                    hoveredButton = null;
+            });
+
+            button.OnPointerClickAsObservable().Subscribe(e =>
+            {
+                // double click on the thumbnail loads the scene (clicks on Load/Import/Delete are handled by those buttons)
+                if(e.button == UnityEngine.EventSystems.PointerEventData.InputButton.Left && e.clickCount == 2 && BetterSceneLoader.DoubleClickLoad.Value)
+                {
+                    currentButton = button;
+                    currentPath = fileInfo.FullName;
+                    LoadCurrent();
+                }
+            });
+
             button.OnPointerEnterAsObservable().Subscribe(e =>
             {
+                hoveredButton = button;
                 currentButton = button;
                 currentPath = fileInfo.FullName;
 

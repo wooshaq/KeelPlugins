@@ -17,6 +17,9 @@
     <Compile Include="$(MSBuildThisFileDirectory)DropdownFilter.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)SceneGrid.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)SortBy.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)FolderTreeView.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)SceneRoots.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ScrollbarStyle.cs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="$(MSBuildThisFileDirectory)Resources\loadicon" />
